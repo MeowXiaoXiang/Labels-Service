@@ -1,0 +1,193 @@
+# =======================================================
+# Python
+# =======================================================
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Virtual environments
+venv/
+.venv/
+ENV/
+env/
+.env.local
+.env.*.local
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# pyenv
+.python-version
+
+# pipenv
+Pipfile.lock
+
+# PEP 582
+__pypackages__/
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# SageMath parsed files
+*.sage.py
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# =======================================================
+# FastAPI / Web Framework
+# =======================================================
+# Environment variables (keep .env as template, ignore local variants)
+.env
+!.env.template
+
+# =======================================================
+# Application-specific (labels-service)
+# =======================================================
+# Generated PDFs and temp files
+output/
+temp/
+
+# Ignore everything in templates/ except the README (keep README tracked)
+templates/*
+!templates/README.md
+
+# Keep test_data as requested - it's for testing
+# test_data/
+
+# Log files
+*.log
+logs/
+
+# =======================================================
+# Docker & Container
+# =======================================================
+# Docker override files
+docker-compose.override.yml
+.dockerignore
+
+# =======================================================
+# IDE & Editor
+# =======================================================
+# VSCode (keep launch.json but ignore other settings)
+.vscode/settings.json
+.vscode/tasks.json
+.vscode/extensions.json
+.vscode/*.code-workspace
+
+# PyCharm
+.idea/
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+*~
+
+# Emacs
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+auto-save-list
+tramp
+.\#*
+
+# =======================================================
+# OS Generated
+# =======================================================
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+.directory
+.fuse_hidden*
+.nfs*
+
+# =======================================================
+# Git & Version Control
+# =======================================================
+*.orig
+
+# =======================================================
+# Security & Secrets
+# =======================================================
+# SSL certificates
+*.pem
+*.key
+*.crt
+*.csr
+
+# Secret files
+secrets/
+.secrets

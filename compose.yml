@@ -1,0 +1,11 @@
+services:
+  label-service:
+    build: .
+    env_file: .env  # Load environment variables from .env file
+    volumes:
+      - ./output:/app/output        # Output directory for generated PDFs
+      - ./templates:/app/templates  # gLabels template files
+      # - ./temp:/app/temp            # Temporary CSV storage (Debug)
+    ports:
+      - "8000:8000"  # Expose API on port 8000
+    restart: unless-stopped  # Restart container unless stopped manually

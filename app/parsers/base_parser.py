@@ -7,7 +7,7 @@
 from abc import ABC, abstractmethod
 from pathlib import Path
 
-from app.models.dto import TemplateInfo
+from app.schema import TemplateInfo
 
 
 class BaseParser(ABC):

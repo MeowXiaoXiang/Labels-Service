@@ -1,9 +1,9 @@
-# app/models/dto.py
-# Data Transfer Objects (DTOs)
-# - LabelRequest: Print job request data model
-# - JobSubmitResponse: Job submission response model
-# - JobStatusResponse: Job status query response model
-# - TemplateInfo: Template metadata model
+# app/schema.py
+# Pydantic Schema Models
+# - LabelRequest: Print job request schema
+# - JobSubmitResponse: Job submission response schema
+# - JobStatusResponse: Job status query response schema
+# - TemplateInfo: Template metadata schema
 
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -85,8 +85,13 @@ class JobStatusResponse(BaseModel):
     error: Optional[str] = Field(
         None, description="Error message if job failed; null if succeeded"
     )
-    created_at: datetime = Field(..., description="Job creation timestamp")
-    updated_at: datetime = Field(..., description="Job last updated timestamp")
+    created_at: datetime = Field(..., description="Job submission timestamp")
+    started_at: Optional[datetime] = Field(
+        None, description="When worker started processing (null if pending)"
+    )
+    finished_at: Optional[datetime] = Field(
+        None, description="When job completed or failed (null if not finished)"
+    )
 
     # Provide a general example; detailed cases are defined in routes
     model_config = ConfigDict(
@@ -98,7 +103,8 @@ class JobStatusResponse(BaseModel):
                 "filename": "demo_20250919_123456.pdf",
                 "error": None,
                 "created_at": "2025-09-19T10:00:00",
-                "updated_at": "2025-09-19T10:00:05",
+                "started_at": "2025-09-19T10:00:01",
+                "finished_at": "2025-09-19T10:00:05",
             }
         }
     )

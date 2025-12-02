@@ -11,7 +11,7 @@ from typing import List
 
 from loguru import logger
 
-from app.models.dto import TemplateInfo
+from app.schema import TemplateInfo
 
 from .base_parser import BaseParser
 

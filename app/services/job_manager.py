@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional
 from loguru import logger
 
 from app.config import settings
-from app.models.dto import LabelRequest
+from app.schema import LabelRequest
 from app.services.label_print import LabelPrintService
 
 
@@ -26,6 +26,8 @@ class JobManager:
         self.queue: asyncio.Queue = asyncio.Queue()
         # Worker task list
         self.workers: List[asyncio.Task] = []
+        # Scheduled cleanup task
+        self.cleanup_task: Optional[asyncio.Task] = None
 
         # Counter: total submitted jobs (lifetime, reset on restart)
         self.jobs_total: int = 0
@@ -62,7 +64,8 @@ class JobManager:
             "template": req.template_name,  # gLabels template
             "error": None,
             "created_at": now,
-            "updated_at": now,
+            "started_at": None,  # when worker starts processing
+            "finished_at": None,  # when job completes or fails
             "request": req.model_dump(),
         }
 
@@ -82,7 +85,7 @@ class JobManager:
                 job_id, req, filename = await self.queue.get()
                 job = self.jobs[job_id]
                 job["status"] = "running"
-                job["updated_at"] = datetime.now()
+                job["started_at"] = datetime.now()
 
                 logger.debug(
                     f"[Worker-{wid}] 🚀 START job_id={job_id}, template={req.template_name}"
@@ -105,7 +108,7 @@ class JobManager:
                     job["error"] = str(e)
                     logger.exception(f"[Worker-{wid}] ❌ job_id={job_id} failed")
                 finally:
-                    job["updated_at"] = datetime.now()
+                    job["finished_at"] = datetime.now()
                     self.queue.task_done()
                     self._cleanup_jobs()
         except asyncio.CancelledError:
@@ -113,51 +116,83 @@ class JobManager:
             raise
 
     # --------------------------------------------------------
-    # Cleanup expired jobs
+    # Cleanup expired jobs and PDFs
     # --------------------------------------------------------
     def _cleanup_jobs(self):
         """
-        Remove jobs older than retention period.
-        Optionally cleanup associated PDF files.
+        Cleanup expired job records and scan output/ to delete old PDFs.
+        Uses file modification time to handle orphaned files as well.
         """
         cutoff = datetime.now() - self.retention
+
+        # 1. Cleanup expired job records from memory
         old_jobs = [jid for jid, job in self.jobs.items() if job["created_at"] < cutoff]
-
         for jid in old_jobs:
-            job = self.jobs[jid]
-
-            # Cleanup PDF file if auto cleanup is enabled
-            if settings.AUTO_CLEANUP_PDF and "output_file" in job:
-                pdf_path = Path(job["output_file"])
-                if pdf_path.exists():
-                    try:
-                        pdf_path.unlink()
-                        logger.debug(f"[JobManager] 🗑️ deleted PDF: {pdf_path.name}")
-                    except OSError as e:
-                        logger.warning(
-                            f"[JobManager] ⚠️ failed to delete PDF {pdf_path.name}: {e}"
-                        )
-
-            # Remove job from memory
             logger.debug(f"[JobManager] 🗑️ cleanup expired job_id={jid}")
             self.jobs.pop(jid, None)
+
+        # 2. Scan output/ to delete all expired PDFs (including orphaned files)
+        output_dir = Path("output")
+        if not output_dir.exists():
+            return
+
+        cutoff_timestamp = cutoff.timestamp()
+        for pdf in output_dir.glob("*.pdf"):
+            try:
+                if pdf.stat().st_mtime < cutoff_timestamp:
+                    pdf.unlink()
+                    logger.debug(f"[JobManager] 🗑️ deleted old PDF: {pdf.name}")
+            except OSError as e:
+                logger.warning(f"[JobManager] ⚠️ cannot delete PDF {pdf.name}: {e}")
+
+    # --------------------------------------------------------
+    # Scheduled cleanup (runs every hour)
+    # --------------------------------------------------------
+    async def _cleanup_scheduler(self):
+        """
+        Background task that runs cleanup periodically.
+        Ensures expired jobs and PDFs are removed even when idle.
+        """
+        try:
+            while True:
+                await asyncio.sleep(3600)  # 1 hour
+                self._cleanup_jobs()
+                logger.debug("[JobManager] ⏰ Scheduled cleanup completed")
+        except asyncio.CancelledError:
+            logger.debug("[JobManager] ⏰ Cleanup scheduler stopped")
+            raise
 
     # --------------------------------------------------------
     # Worker pool management
     # --------------------------------------------------------
     def start_workers(self):
         """
-        Start all workers to process the queue.
+        Start all workers and scheduled cleanup task.
         """
+        # Run cleanup once at startup
+        self._cleanup_jobs()
+
+        # Start worker pool
         for wid in range(self.max_parallel):
             task = asyncio.create_task(self._worker(wid))
             self.workers.append(task)
+
+        # Start scheduled cleanup (hourly)
+        self.cleanup_task = asyncio.create_task(self._cleanup_scheduler())
+
         logger.info(f"[JobManager] started with {self.max_parallel} workers")
 
     async def stop_workers(self):
         """
-        Stop all workers and wait for completion.
+        Stop all workers and cleanup scheduler.
         """
+        # Stop cleanup scheduler
+        if self.cleanup_task:
+            self.cleanup_task.cancel()
+            await asyncio.gather(self.cleanup_task, return_exceptions=True)
+            self.cleanup_task = None
+
+        # Stop all workers
         for task in self.workers:
             task.cancel()
         await asyncio.gather(*self.workers, return_exceptions=True)

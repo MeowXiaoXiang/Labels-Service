@@ -14,7 +14,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from app.models.dto import TemplateInfo
+from app.schema import TemplateInfo
 from app.services.template_service import TemplateService
 
 

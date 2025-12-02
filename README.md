@@ -38,10 +38,12 @@ Client Request → FastAPI → JobManager → TemplateService → GlabelsEngine 
 ```text
 app/
 ├── api/           # API routes and endpoints
+├── core/          # Logging and version info
+├── parsers/       # Template format parsers
 ├── services/      # Business logic (JobManager, TemplateService)
 ├── utils/         # GlabelsEngine CLI wrapper
-├── models/        # Data models and DTOs
-├── core/          # Logging and configuration
+├── config.py      # Environment configuration
+├── schema.py      # Pydantic schema models
 └── main.py        # FastAPI application entry point
 ```
 
@@ -150,6 +152,7 @@ PORT=8000
 RELOAD=false
 KEEP_CSV=false
 MAX_PARALLEL=0
+MAX_LABELS_PER_BATCH=300
 GLABELS_TIMEOUT=600
 RETENTION_HOURS=24
 LOG_LEVEL=INFO
@@ -207,13 +210,34 @@ Response:
 ### Check Job Status
 
 ```bash
-curl http://localhost:8000/labels/status/abc123...
+curl http://localhost:8000/labels/jobs/abc123...
+```
+
+### Stream Job Status (SSE)
+
+For real-time status updates, use Server-Sent Events:
+
+```bash
+curl -N http://localhost:8000/labels/jobs/abc123.../stream
+```
+
+Or in JavaScript:
+
+```javascript
+const es = new EventSource('/labels/jobs/abc123.../stream');
+es.addEventListener('status', (e) => {
+    const job = JSON.parse(e.data);
+    console.log(job.status);  // pending → running → done
+    if (job.status === 'done' || job.status === 'failed') {
+        es.close();
+    }
+});
 ```
 
 ### Download PDF
 
 ```bash
-curl -O http://localhost:8000/labels/download/abc123...
+curl -O http://localhost:8000/labels/jobs/abc123.../download
 ```
 
 ### List Templates
@@ -277,6 +301,7 @@ docker compose exec label-service sh
 ## Configuration Tips
 
 - `MAX_PARALLEL=0` auto-sets to CPU cores-1, adjust based on system performance
+- `MAX_LABELS_PER_BATCH=300` controls how many labels are processed per batch before merging into a single PDF
 - `GLABELS_TIMEOUT=600` increase if processing large datasets times out
 - `KEEP_CSV=true` enables CSV file retention for debugging purposes
 - `RETENTION_HOURS=24` controls how long jobs are kept in memory

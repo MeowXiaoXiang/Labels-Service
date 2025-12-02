@@ -10,3 +10,6 @@ uvicorn==0.37.0
 
 # Logging
 loguru==0.7.3
+
+# PDF merging (for batch processing)
+pypdf>=6.4.0

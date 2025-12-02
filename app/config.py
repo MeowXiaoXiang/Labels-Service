@@ -32,18 +32,20 @@ class Settings(BaseSettings):
     GLABELS_TIMEOUT: int = 600
     # Max timeout per job in seconds (default 600 = 10 minutes)
 
+    MAX_LABELS_PER_BATCH: int = 300
+    # Maximum labels per batch before auto-splitting and PDF merging
+    # Set to 0 to disable (not recommended for large datasets)
+    # Recommended: 200-300 for ARM/embedded, 500-800 for x86 servers
+
     RETENTION_HOURS: int = 24
     # Hours to keep job states in memory before cleanup (avoids memory bloat)
-
-    AUTO_CLEANUP_PDF: bool = True
-    # Whether to automatically cleanup PDF files when jobs expire
 
     LOG_LEVEL: str = "INFO"
     # Logging level: DEBUG / INFO / WARNING / ERROR
     # Default INFO, recommended INFO or higher in production
 
-    # Directory for log files. Can be relative or absolute. Default: logs
     LOG_DIR: str = "logs"
+    # Directory for log files. Can be relative or absolute. Default: logs
 
     # -------------------------
     # Internal settings

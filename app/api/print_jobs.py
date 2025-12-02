@@ -1,20 +1,21 @@
 # app/api/print_jobs.py
 # Labels API Router
 # - Submit print jobs
-# - Query job status
+# - Query job status (polling + SSE streaming)
 # - Download generated PDFs
 # - List recent jobs
 # - Template discovery and information
 
+import asyncio
 from pathlib import Path
 from typing import List
 
 from fastapi import APIRouter, Body, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from loguru import logger
 
-from app.models.dto import (JobStatusResponse, JobSubmitResponse, LabelRequest,
-                            TemplateInfo)
+from app.schema import (JobStatusResponse, JobSubmitResponse, LabelRequest,
+                        TemplateInfo)
 
 # Create router - all APIs will be mounted under /labels
 router = APIRouter(prefix="/labels", tags=["Labels"])
@@ -146,7 +147,8 @@ async def submit_labels(
                                 "filename": "demo_20250919_123456.pdf",
                                 "error": None,
                                 "created_at": "2025-09-19T10:00:00",
-                                "updated_at": "2025-09-19T10:00:05",
+                                "started_at": "2025-09-19T10:00:01",
+                                "finished_at": "2025-09-19T10:00:05",
                             },
                         },
                         "failed": {
@@ -158,7 +160,8 @@ async def submit_labels(
                                 "filename": "demo_20250919_123457.pdf",
                                 "error": "PDF generation failed (rc=1)",
                                 "created_at": "2025-09-19T10:01:00",
-                                "updated_at": "2025-09-19T10:01:03",
+                                "started_at": "2025-09-19T10:01:01",
+                                "finished_at": "2025-09-19T10:01:03",
                             },
                         },
                         "running": {
@@ -170,7 +173,21 @@ async def submit_labels(
                                 "filename": "demo_20250919_123458.pdf",
                                 "error": None,
                                 "created_at": "2025-09-19T10:02:00",
-                                "updated_at": "2025-09-19T10:02:10",
+                                "started_at": "2025-09-19T10:02:01",
+                                "finished_at": None,
+                            },
+                        },
+                        "pending": {
+                            "summary": "Pending job",
+                            "value": {
+                                "job_id": "423e4567-e89b-12d3-a456-426614174333",
+                                "status": "pending",
+                                "template": "demo.glabels",
+                                "filename": "demo_20250919_123459.pdf",
+                                "error": None,
+                                "created_at": "2025-09-19T10:03:00",
+                                "started_at": None,
+                                "finished_at": None,
                             },
                         },
                     }
@@ -200,8 +217,9 @@ async def get_job_status(job_id: str, request: Request):
     - **template**: gLabels template filename used
     - **filename**: Expected output PDF filename
     - **error**: Error message (null if successful)
-    - **created_at**: Job creation timestamp
-    - **updated_at**: Last status update timestamp
+    - **created_at**: Job submission timestamp
+    - **started_at**: When worker started processing (null if pending)
+    - **finished_at**: When job completed or failed (null if not finished)
 
     > **Tip**: Use the `/jobs/{job_id}/download` endpoint when status is `done`
     """
@@ -210,6 +228,115 @@ async def get_job_status(job_id: str, request: Request):
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return JobStatusResponse(job_id=job_id, **job)
+
+
+# Stream Job Status (SSE)
+@router.get(
+    "/jobs/{job_id}/stream",
+    summary="Stream job status updates (SSE)",
+    responses={
+        200: {
+            "description": "Server-Sent Events stream",
+            "content": {"text/event-stream": {}},
+        },
+        404: {"description": "Job not found"},
+    },
+)
+async def stream_job_status(job_id: str, request: Request):
+    """
+    Stream real-time job status updates using Server-Sent Events (SSE).
+
+    ## Connection
+
+    Opens a persistent HTTP connection that pushes status updates as they occur.
+    The stream automatically closes when the job reaches a terminal state (`done` or `failed`).
+
+    ## Event Format
+
+    ```
+    event: status
+    data: {"job_id": "...", "status": "running", ...}
+
+    event: status
+    data: {"job_id": "...", "status": "done", ...}
+    ```
+
+    ## Event Types
+
+    | Event | Description |
+    |-------|-------------|
+    | `status` | Job status update (JSON payload) |
+    | `error` | Error occurred (e.g., job not found) |
+
+    ## Client Example (JavaScript)
+
+    ```javascript
+    const eventSource = new EventSource('/labels/jobs/{job_id}/stream');
+
+    eventSource.addEventListener('status', (e) => {
+        const job = JSON.parse(e.data);
+        console.log('Status:', job.status);
+        if (job.status === 'done' || job.status === 'failed') {
+            eventSource.close();
+        }
+    });
+
+    eventSource.addEventListener('error', (e) => {
+        console.error('SSE Error:', e.data);
+        eventSource.close();
+    });
+    ```
+
+    ## Polling Interval
+
+    Status is checked every **1 second** and pushed only when status changes
+    or until a terminal state is reached.
+
+    > **Tip**: Use this instead of polling `/jobs/{job_id}` for real-time updates
+    """
+    job_manager = request.app.state.job_manager
+
+    # Check job exists before starting stream
+    job = job_manager.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    async def event_generator():
+        last_status = None
+        while True:
+            # Check if client disconnected
+            if await request.is_disconnected():
+                logger.debug(f"[SSE] Client disconnected for job {job_id}")
+                break
+
+            job = job_manager.get_job(job_id)
+            if not job:
+                yield f"event: error\ndata: Job not found or expired\n\n"
+                break
+
+            current_status = job["status"]
+
+            # Send update if status changed or first message
+            if current_status != last_status:
+                response = JobStatusResponse(job_id=job_id, **job)
+                yield f"event: status\ndata: {response.model_dump_json()}\n\n"
+                last_status = current_status
+
+            # Stop streaming on terminal states
+            if current_status in ("done", "failed"):
+                break
+
+            await asyncio.sleep(1)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+        },
+    )
 
 
 # Download Generated PDF
@@ -289,7 +416,8 @@ async def download_job_pdf(job_id: str, request: Request):
                             "filename": "demo_20250919_123456.pdf",
                             "error": None,
                             "created_at": "2025-09-19T10:00:00",
-                            "updated_at": "2025-09-19T10:00:05",
+                            "started_at": "2025-09-19T10:00:01",
+                            "finished_at": "2025-09-19T10:00:05",
                         },
                         {
                             "job_id": "223e4567-e89b-12d3-a456-426614174111",
@@ -298,7 +426,8 @@ async def download_job_pdf(job_id: str, request: Request):
                             "filename": "demo_20250919_123457.pdf",
                             "error": "PDF generation failed (rc=1)",
                             "created_at": "2025-09-19T10:01:00",
-                            "updated_at": "2025-09-19T10:01:03",
+                            "started_at": "2025-09-19T10:01:01",
+                            "finished_at": "2025-09-19T10:01:03",
                         },
                     ]
                 }
@@ -325,8 +454,9 @@ async def list_jobs(request: Request, limit: int = 10):
     - **template**: Template filename used
     - **filename**: Output PDF filename
     - **error**: Error message (if failed)
-    - **created_at**: Job creation timestamp
-    - **updated_at**: Last status update
+    - **created_at**: Job submission timestamp
+    - **started_at**: When processing started
+    - **finished_at**: When job finished
 
     ## Job Status Reference
 

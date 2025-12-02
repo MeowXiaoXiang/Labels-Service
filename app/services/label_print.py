@@ -1,22 +1,25 @@
 # app/services/label_print.py
 # Label Print Service (Core Business Logic)
 # - JSON → CSV → gLabels → PDF
+# - Supports automatic batch splitting + PDF merging for large datasets
 # - info logs: job success/failure
 # - debug logs: job start, CSV writing, temp file cleanup
 
 from __future__ import annotations
 
+import asyncio
 import csv
 import os
 import re
-import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
 from loguru import logger
+from pypdf import PdfWriter
 
+from app.config import settings
 from app.utils.glabels_engine import GlabelsEngine, GlabelsRunError
 
 
@@ -44,6 +47,27 @@ def _slug(s: str) -> str:
     Allowed characters: A-Z, a-z, 0-9, dot, underscore, hyphen.
     """
     return re.sub(r"[^A-Za-z0-9._-]", "_", s or "")
+
+
+def _chunk_list(data: List, chunk_size: int) -> List[List]:
+    """
+    Split a list into multiple chunks.
+    """
+    if chunk_size <= 0:
+        return [data]
+    return [data[i : i + chunk_size] for i in range(0, len(data), chunk_size)]
+
+
+def _merge_pdfs(pdf_paths: List[Path], output_path: Path) -> None:
+    """
+    Merge multiple PDF files using pypdf.
+    """
+    writer = PdfWriter()
+    for pdf_path in pdf_paths:
+        writer.append(str(pdf_path))
+    with output_path.open("wb") as f:
+        writer.write(f)
+    writer.close()
 
 
 # Label Print Service
@@ -119,7 +143,55 @@ class LabelPrintService:
         raise FileNotFoundError(f"gLabels template not found: {template_name}")
 
     # --------------------------------------------------------
-    # Core method: Generate PDF
+    # Generate single batch PDF (internal method)
+    # --------------------------------------------------------
+    async def _generate_single_batch(
+        self,
+        *,
+        job_id: str,
+        batch_index: int,
+        template_path: Path,
+        data: List[Dict],
+        copies: int,
+        temp_dir: Path,
+        output_dir: Path,
+        field_order: Optional[List[str]] = None,
+    ) -> Path:
+        """
+        Generate a single batch PDF (internal method).
+        Returns the generated PDF path.
+        """
+        # Batch-specific CSV and PDF paths
+        csv_path = temp_dir / f"{job_id}_batch{batch_index}.csv"
+        batch_pdf = output_dir / f"{job_id}_batch{batch_index}.pdf"
+
+        logger.debug(
+            f"[LabelPrint] 🔄 Batch {batch_index} starting: "
+            f"labels={len(data)}, csv={csv_path.name}, pdf={batch_pdf.name}"
+        )
+
+        # JSON → CSV
+        self._json_to_csv(data, csv_path, field_order=field_order)
+
+        try:
+            await self.engine.run_batch(
+                output_pdf=batch_pdf,
+                template_path=template_path,
+                csv_path=csv_path,
+                extra_args=[f"--copies={copies}"] if copies > 1 else [],
+            )
+            logger.debug(f"[LabelPrint] ✅ batch {batch_index} done → {batch_pdf}")
+            return batch_pdf
+        finally:
+            # Cleanup temp CSV
+            if csv_path.exists() and not self.keep_csv:
+                try:
+                    csv_path.unlink()
+                except OSError:
+                    pass
+
+    # --------------------------------------------------------
+    # Core method: Generate PDF (with auto batch splitting)
     # --------------------------------------------------------
     async def generate_pdf(
         self,
@@ -133,76 +205,151 @@ class LabelPrintService:
     ) -> Path:
         """
         Generate PDF based on template and JSON data.
-        Steps:
-        - Convert JSON → temp CSV
-        - Call glabels-3-batch
-        - Save PDF into output/
+
+        When label count exceeds MAX_LABELS_PER_BATCH, it will automatically:
+        1. Split data into multiple batches
+        2. Generate multiple small PDFs in parallel
+        3. Merge them into the final PDF
+
+        This prevents glabels from running out of memory or timing out
+        when processing large datasets.
         """
         template_path = self._resolve_template(template_name)
 
-        # Ensure output directory exists
+        # Ensure directories exist
+        temp_dir = Path("temp")
         output_dir = Path("output")
+        temp_dir.mkdir(exist_ok=True)
         output_dir.mkdir(exist_ok=True)
 
-        # Prepare output PDF
         output_pdf = output_dir / filename
-
-        # Handle CSV creation based on keep_csv setting
-        if self.keep_csv:
-            # Keep CSV: save to temp/ directory with job_id name
-            temp_dir = Path("temp")
-            temp_dir.mkdir(exist_ok=True)
-            csv_path = temp_dir / f"{job_id}.csv"
-            # JSON → CSV
-            self._json_to_csv(data, csv_path, field_order=field_order)
-        else:
-            # Don't keep CSV: use tempfile, let system auto-cleanup
-            temp_csv_fd, temp_csv_name = tempfile.mkstemp(
-                suffix=".csv", prefix=f"labels_{job_id}_"
-            )
-            csv_path = Path(temp_csv_name)
-            os.close(temp_csv_fd)  # Close file descriptor, we'll use Path to write
-            # JSON → CSV
-            self._json_to_csv(data, csv_path, field_order=field_order)
-
-        # Run glabels
         start_time = time.time()
+
+        # Get batch size setting
+        max_per_batch = settings.MAX_LABELS_PER_BATCH
+        total_labels = len(data)
+
+        # Determine if batching is needed
+        need_batch = max_per_batch > 0 and total_labels > max_per_batch
+
         logger.debug(
-            f"[LabelPrint] 🚀 START job_id={job_id}, template={template_path}, copies={copies}"
+            f"[LabelPrint] 📊 Batch config: total_labels={total_labels}, "
+            f"max_per_batch={max_per_batch}, need_batch={need_batch}"
         )
 
-        try:
-            await self.engine.run_batch(
-                output_pdf=output_pdf,
-                template_path=template_path,
-                csv_path=csv_path,
-                extra_args=[f"--copies={copies}"] if copies > 1 else [],
+        if not need_batch:
+            # ============ Single batch processing (original logic) ============
+            csv_path = temp_dir / f"{job_id}.csv"
+            self._json_to_csv(data, csv_path, field_order=field_order)
+
+            logger.debug(
+                f"[LabelPrint] 🚀 START job_id={job_id}, template={template_path}, "
+                f"labels={total_labels}, copies={copies}"
             )
+
+            try:
+                await self.engine.run_batch(
+                    output_pdf=output_pdf,
+                    template_path=template_path,
+                    csv_path=csv_path,
+                    extra_args=[f"--copies={copies}"] if copies > 1 else [],
+                )
+                duration = time.time() - start_time
+                logger.info(
+                    f"[LabelPrint] ✅ job_id={job_id} finished in {duration:.2f}s → {output_pdf}"
+                )
+            except GlabelsRunError as e:
+                duration = time.time() - start_time
+                logger.error(
+                    f"[LabelPrint] ❌ job_id={job_id} failed after {duration:.2f}s "
+                    f"(rc={e.returncode})\n{e.stderr}"
+                )
+                truncated_stderr = (
+                    (e.stderr[:1024] + "...") if len(e.stderr) > 1024 else e.stderr
+                )
+                raise RuntimeError(
+                    f"Label PDF generation failed (rc={e.returncode})\n{truncated_stderr}"
+                ) from e
+            finally:
+                if csv_path.exists() and not self.keep_csv:
+                    try:
+                        csv_path.unlink()
+                        logger.debug(f"[LabelPrint] 🗑️ Deleted temp CSV: {csv_path}")
+                    except OSError:
+                        logger.warning(
+                            f"[LabelPrint] ⚠️ Cannot delete temp CSV: {csv_path}"
+                        )
+
+            return output_pdf
+
+        # ============ Batch processing ============
+        chunks = _chunk_list(data, max_per_batch)
+        num_batches = len(chunks)
+
+        logger.info(
+            f"[LabelPrint] 🚀 START job_id={job_id}, template={template_path}, "
+            f"labels={total_labels} → split into {num_batches} batches (max {max_per_batch}/batch)"
+        )
+
+        # Collect field order first to ensure consistency across batches
+        if field_order is None:
+            field_order = _collect_fieldnames(data)
+
+        # Log batch size distribution
+        batch_sizes = [len(chunk) for chunk in chunks]
+        logger.debug(
+            f"[LabelPrint] 📦 Batch distribution: {batch_sizes} "
+            f"(total={sum(batch_sizes)}, batches={num_batches})"
+        )
+
+        batch_pdfs: List[Path] = []
+        try:
+            # Generate all batch PDFs in parallel
+            tasks = [
+                self._generate_single_batch(
+                    job_id=job_id,
+                    batch_index=i,
+                    template_path=template_path,
+                    data=chunk,
+                    copies=copies,
+                    temp_dir=temp_dir,
+                    output_dir=output_dir,
+                    field_order=field_order,
+                )
+                for i, chunk in enumerate(chunks)
+            ]
+            batch_pdfs = await asyncio.gather(*tasks)
+
+            # Merge all batch PDFs
+            logger.debug(f"[LabelPrint] 📎 Merging {num_batches} PDFs...")
+            merge_start = time.time()
+            _merge_pdfs(batch_pdfs, output_pdf)
+            merge_duration = time.time() - merge_start
+            logger.debug(f"[LabelPrint] 📎 Merge completed in {merge_duration:.2f}s")
+
             duration = time.time() - start_time
             logger.info(
-                f"[LabelPrint] ✅ job_id={job_id} finished in {duration:.2f}s → {output_pdf}"
+                f"[LabelPrint] ✅ job_id={job_id} finished in {duration:.2f}s "
+                f"({num_batches} batches merged) → {output_pdf}"
             )
-        except GlabelsRunError as e:
+
+        except Exception as e:
             duration = time.time() - start_time
             logger.error(
-                f"[LabelPrint] ❌ job_id={job_id} failed after {duration:.2f}s "
-                f"(rc={e.returncode})\n{e.stderr}"
+                f"[LabelPrint] ❌ job_id={job_id} failed after {duration:.2f}s: {e}"
             )
-            truncated_stderr = (
-                (e.stderr[:1024] + "...") if len(e.stderr) > 1024 else e.stderr
-            )
-            raise RuntimeError(
-                f"Label PDF generation failed (rc={e.returncode})\n{truncated_stderr}"
-            ) from e
+            raise RuntimeError(f"Label PDF generation failed: {e}") from e
+
         finally:
-            # Cleanup: only needed for keep_csv=False with tempfile
-            if not self.keep_csv and csv_path.exists():
-                try:
-                    csv_path.unlink()
-                    logger.debug(f"[LabelPrint] 🗑️ Deleted temp CSV: {csv_path}")
-                except OSError:
-                    logger.warning(f"[LabelPrint] ⚠️ Cannot delete temp CSV: {csv_path}")
-            elif self.keep_csv:
-                logger.debug(f"[LabelPrint] 📁 Kept CSV file: {csv_path}")
+            # Cleanup all batch temp PDFs
+            for batch_pdf in batch_pdfs:
+                if batch_pdf.exists():
+                    try:
+                        batch_pdf.unlink()
+                        logger.debug(f"[LabelPrint] 🗑️ Deleted batch PDF: {batch_pdf}")
+                    except OSError:
+                        logger.warning(
+                            f"[LabelPrint] ⚠️ Cannot delete batch PDF: {batch_pdf}"
+                        )
 
         return output_pdf

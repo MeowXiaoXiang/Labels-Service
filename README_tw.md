@@ -38,10 +38,12 @@ open http://localhost:8000/docs
 ```text
 app/
 ├── api/           # API 路由與端點
+├── core/          # 日誌與版本資訊
+├── parsers/       # 模板格式解析器
 ├── services/      # 業務邏輯 (JobManager, TemplateService)
 ├── utils/         # GlabelsEngine CLI 封裝器
-├── models/        # 資料模型與 DTO
-├── core/          # 日誌與設定
+├── config.py      # 環境設定
+├── schema.py      # Pydantic schema 模型
 └── main.py        # FastAPI 應用程式入口
 ```
 
@@ -150,6 +152,7 @@ PORT=8000                   # 伺服器埠號
 RELOAD=false                # 自動重載 (開發用)
 KEEP_CSV=false              # 保留中繼 CSV 檔案
 MAX_PARALLEL=0              # 最大平行工作數 (0=自動)
+MAX_LABELS_PER_BATCH=300    # 每批最大標籤數量
 GLABELS_TIMEOUT=600         # 單一任務逾時秒數
 RETENTION_HOURS=24          # 任務保存時數
 LOG_LEVEL=INFO              # 日誌等級
@@ -207,13 +210,34 @@ curl -X POST http://localhost:8000/labels/print \
 ### 查詢任務狀態
 
 ```bash
-curl http://localhost:8000/labels/status/abc123...
+curl http://localhost:8000/labels/jobs/abc123...
+```
+
+### 即時狀態推送 (SSE)
+
+使用 Server-Sent Events 獲取即時狀態更新：
+
+```bash
+curl -N http://localhost:8000/labels/jobs/abc123.../stream
+```
+
+或在 JavaScript 中使用：
+
+```javascript
+const es = new EventSource('/labels/jobs/abc123.../stream');
+es.addEventListener('status', (e) => {
+    const job = JSON.parse(e.data);
+    console.log(job.status);  // pending → running → done
+    if (job.status === 'done' || job.status === 'failed') {
+        es.close();
+    }
+});
 ```
 
 ### 下載 PDF
 
 ```bash
-curl -O http://localhost:8000/labels/download/abc123...
+curl -O http://localhost:8000/labels/jobs/abc123.../download
 ```
 
 ### 列出模板
@@ -277,6 +301,7 @@ docker compose exec label-service sh
 ## 設定說明
 
 - `MAX_PARALLEL=0` 自動設定為 CPU 核心數-1，可根據系統效能調整
+- `MAX_LABELS_PER_BATCH=300` 控制每批次處理的標籤數量，超過時會自動分批處理再合併為單一 PDF
 - `GLABELS_TIMEOUT=600` 如果處理大量資料時逾時，可適當提高
 - `KEEP_CSV=true` 開啟可保留中繼 CSV 檔案供偵錯檢查
 - `RETENTION_HOURS=24` 控制任務在記憶體中保存的時間

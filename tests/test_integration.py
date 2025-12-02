@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
-from app.models.dto import LabelRequest
+from app.schema import LabelRequest
 from app.services.job_manager import JobManager
 from app.services.template_service import TemplateService
 

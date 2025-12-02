@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from app.models.dto import LabelRequest
+from app.schema import LabelRequest
 from app.services.job_manager import JobManager
 
 
@@ -118,7 +118,8 @@ def test_cleanup_jobs():
         "template": "demo.glabels",
         "error": None,
         "created_at": datetime.now() - timedelta(hours=1),
-        "updated_at": datetime.now() - timedelta(hours=1),
+        "started_at": datetime.now() - timedelta(hours=1),
+        "finished_at": datetime.now() - timedelta(hours=1),
         "request": req.model_dump(),
     }
 
@@ -141,25 +142,28 @@ def test_get_job_and_list_jobs():
         "template": "demo",
         "error": None,
         "created_at": now - timedelta(seconds=5),
-        "updated_at": now,
+        "started_at": now - timedelta(seconds=4),
+        "finished_at": now,
         "request": req.model_dump(),
     }
     jm.jobs["jid2"] = {
         "status": "pending",
-        "filename": "b.pdf",
+        "filename": None,
         "template": "demo",
         "error": None,
         "created_at": now - timedelta(seconds=1),
-        "updated_at": now,
+        "started_at": None,
+        "finished_at": None,
         "request": req.model_dump(),
     }
     jm.jobs["jid3"] = {
         "status": "running",
-        "filename": "c.pdf",
+        "filename": None,
         "template": "demo",
         "error": None,
         "created_at": now - timedelta(seconds=3),
-        "updated_at": now,
+        "started_at": now - timedelta(seconds=2),
+        "finished_at": None,
         "request": req.model_dump(),
     }
 
